@@ -1,0 +1,158 @@
+/*
+ * main.c
+ *
+ * Created: 11/5/2025 5:09:50 PM
+ *  Author: anast
+ */ 
+
+#define F_CPU 16000000UL	// 16 MHz
+#include <avr/io.h>
+#include <util/delay.h>
+#include <stdint.h>
+#include <avr/interrupt.h>
+
+uint16_t timer_start = 49910 ;
+ 
+void write_2_nibbles(uint8_t lcd_data) {
+	uint8_t temp;
+
+// Send the high nibble
+	temp = (PIND & 0x0F) | (lcd_data & 0xF0);	// Keep lower 4 bits of PIND and set high nibble of lcd_data
+	PORTD = temp;								// Output the high nibble to PORTD
+	PORTD |= (1 << PD3);						// Enable pulse high
+	_delay_us(1);								// Small delay to let the signal settle
+	PORTD &= ~(1 << PD3);						// Enable pulse low
+
+// Send the low nibble
+	lcd_data <<= 4; 							// Move low nibble to high nibble position
+	temp = (PIND & 0x0F) | (lcd_data & 0xF0);	// Keep lower 4 bits of PIND and set high nibble of new lcd_data
+	PORTD = temp;								// Output the low nibble to PORTD
+	PORTD |= (1 << PD3);						// Enable pulse high
+	_delay_us(1);								// Small delay to let the signal settle
+	PORTD &= ~(1 << PD3);						// Enable pulse low
+}
+
+void lcd_data(uint8_t data)
+{
+	PORTD |= 0x04;				// LCD_RS = 1, (PD2 = 1) -> For Data
+	write_2_nibbles(data);		// Send data
+	_delay_ms(1);
+	return;
+}
+void lcd_command(uint8_t data)
+{
+	PORTD &= 0xFB;				// LCD_RS = 0, (PD2 = 0) -> For Instruction
+	write_2_nibbles(data);		// Send data
+	_delay_ms(1);             
+	return;
+}
+
+void lcd_clear_display()
+{
+	uint8_t clear_disp = 0x01;	// Clear display command
+	lcd_command(clear_disp);
+	_delay_ms(5);				// Wait 5 msec
+	return;
+	}
+
+void lcd_init() {
+	_delay_ms(200);				// Wait 5 msec
+
+// Send 0x30 command to set 8-bit mode (three times)
+	PORTD = 0x30;				// command to switch to 8-bit mode
+	PORTD |= (1 << PD3);		// Enable pulse
+	_delay_us(1);
+	PORTD &= ~(1 << PD3);		// Clear enable
+	_delay_us(250);				// Wait 250 µs
+
+	PORTD = 0x30;              // Repeat command to ensure mode set
+	PORTD |= (1 << PD3);
+	_delay_us(1);
+	PORTD &= ~(1 << PD3);
+	_delay_us(250);
+
+	PORTD = 0x30;              // Repeat once more
+	PORTD |= (1 << PD3);
+	_delay_us(1);
+	PORTD &= ~(1 << PD3);
+	_delay_us(250);
+
+// Send 0x20 command to switch to 4-bit mode
+	PORTD = 0x20;
+	PORTD |= (1 << PD3);
+	_delay_us(1);
+	PORTD &= ~(1 << PD3);
+	_delay_us(30);
+
+// Set 4-bit mode, 2 lines, 5x8 dots
+	lcd_command(0x28);
+
+// Display ON, Cursor OFF
+	lcd_command(0x0C);
+
+// Clear display
+	lcd_clear_display();
+
+// Entry mode: Increase cursor, no display shift
+	lcd_command(0x06);
+}
+
+ISR(TIMER1_OVF_vect)
+{
+	TCNT1H = (timer_start>>8);			//must begin-time so i have interrupt by timer overflow every 1 second
+	TCNT1L = (timer_start);				// Re-initialize again the timer for overflow
+	lcd_clear_display();
+	ADCSRA |= 0x40;						//start ADC
+	while((ADCSRA&0x40)!= 0x00);		//Wait for conversion to end
+	uint16_t temp;
+	uint16_t result;
+    
+	result = ADC;
+	result = result*5;  
+
+	temp = result % 1024;
+	result = result/1024;
+	result += '0';
+	lcd_data(result);
+
+	lcd_data('.');
+
+	result = temp*10;
+	temp = result % 1024;
+	result = result/1024 ;
+	result += '0';
+	lcd_data(result);
+
+	result = temp*10;
+	result = result/1024;
+	result += '0';
+	lcd_data(result);
+}
+
+int main(){
+	lcd_init();
+	lcd_clear_display();
+
+	sei();				//enable interrupts
+	DDRB = 0xFF;
+	PORTB = 0x00;
+
+	DDRC = 0x00;
+
+	DDRD = 0xff;
+	PORTD = 0x00;
+
+//ADC enable
+	ADMUX = 0x43;
+	ADCSRA = 0x87;				//disable interrupts from ADC
+
+//time set up
+	TCCR1B = 0x00;				//freeze timer
+	TIMSK1 = 0x01;				//allowing overflow interrupt
+	TCNT1H = (timer_start>>8);	//set timer_start to have overflow interrupt every 1 s
+	TCNT1L = (timer_start);
+
+	TCCR1B = 0x05;				//start timer with 16000000/1024=15.625 hz
+
+	while(1);
+}
